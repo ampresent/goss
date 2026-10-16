@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -46,6 +47,22 @@ const EthtoolDefaultID = "default"
 //
 // A default entry is expanded while validating, so a failure names both the
 // offending interface and the attribute that did not match.
+//
+// An attribute the interface has nothing to report for fails the entry, which is
+// what a rule that has to hold everywhere wants. A baseline that lists settings
+// only some drivers expose opts out per entry with skip_unsupported, which
+// records those attributes as skipped instead of failed:
+//
+//	ethtool:
+//	  default:
+//	    rx_jumbo_ring: "0"
+//	    priv_flags:
+//	      - "ctpio: on"
+//	    skip_unsupported: true
+//
+// Only "the hardware does not have this setting" is skipped: a value that is
+// reported but does not match still fails, and so does a host where ethtool is
+// missing or the interface is gone.
 type Ethtool struct {
 	Title             string   `json:"title,omitempty" yaml:"title,omitempty"`
 	Meta              meta     `json:"meta,omitempty" yaml:"meta,omitempty"`
@@ -71,6 +88,10 @@ type Ethtool struct {
 	ExcludeInterfaces []string `json:"exclude_interfaces,omitempty" yaml:"exclude_interfaces,omitempty"`
 	ExcludeDrivers    []string `json:"exclude_drivers,omitempty" yaml:"exclude_drivers,omitempty"`
 	Skip              bool     `json:"skip,omitempty" yaml:"skip,omitempty"`
+	// SkipUnsupported records an attribute the interface has nothing to report
+	// for as skipped instead of failed, so a baseline can name driver specific
+	// settings without breaking on hardware that does not have them.
+	SkipUnsupported bool `json:"skip_unsupported,omitempty" yaml:"skip_unsupported,omitempty"`
 }
 
 const (
@@ -172,58 +193,43 @@ func (e *Ethtool) validateInterface(ctx context.Context, sys *system.System, nam
 	sysEthtool := sys.NewEthtool(ctx, name, sys, util.Config{})
 
 	var results []TestResult
-	if view.Speed != nil {
-		results = append(results, ValidateValue(&view, "speed", view.Speed, sysEthtool.Speed, skip))
-	}
-	if view.Duplex != nil {
-		results = append(results, ValidateValue(&view, "duplex", view.Duplex, sysEthtool.Duplex, skip))
-	}
-	if view.RxChecksum != nil {
-		results = append(results, ValidateValue(&view, "rx_checksum", view.RxChecksum, sysEthtool.RxChecksum, skip))
-	}
-	if view.TxChecksum != nil {
-		results = append(results, ValidateValue(&view, "tx_checksum", view.TxChecksum, sysEthtool.TxChecksum, skip))
-	}
-	if view.AdaptiveRx != nil {
-		results = append(results, ValidateValue(&view, "adaptive_rx", view.AdaptiveRx, sysEthtool.AdaptiveRx, skip))
-	}
-	if view.AdaptiveTx != nil {
-		results = append(results, ValidateValue(&view, "adaptive_tx", view.AdaptiveTx, sysEthtool.AdaptiveTx, skip))
-	}
-	if view.RxUsecs != nil {
-		results = append(results, ValidateValue(&view, "rx_usecs", view.RxUsecs, sysEthtool.RxUsecs, skip))
-	}
-	if view.TxUsecs != nil {
-		results = append(results, ValidateValue(&view, "tx_usecs", view.TxUsecs, sysEthtool.TxUsecs, skip))
-	}
-	if view.RxRing != nil {
-		results = append(results, ValidateValue(&view, "rx_ring", view.RxRing, sysEthtool.RingRx, skip))
-	}
-	if view.TxRing != nil {
-		results = append(results, ValidateValue(&view, "tx_ring", view.TxRing, sysEthtool.RingTx, skip))
-	}
-	if view.RxMiniRing != nil {
-		results = append(results, ValidateValue(&view, "rx_mini_ring", view.RxMiniRing, sysEthtool.RingRxMini, skip))
-	}
-	if view.RxJumboRing != nil {
-		results = append(results, ValidateValue(&view, "rx_jumbo_ring", view.RxJumboRing, sysEthtool.RingRxJumbo, skip))
-	}
-	if view.RxRingMax != nil {
-		results = append(results, ValidateValue(&view, "rx_ring_max", view.RxRingMax, sysEthtool.RingRxMax, skip))
-	}
-	if view.TxRingMax != nil {
-		results = append(results, ValidateValue(&view, "tx_ring_max", view.TxRingMax, sysEthtool.RingTxMax, skip))
-	}
-	if view.RxMiniRingMax != nil {
-		results = append(results, ValidateValue(&view, "rx_mini_ring_max", view.RxMiniRingMax, sysEthtool.RingRxMiniMax, skip))
-	}
-	if view.RxJumboRingMax != nil {
-		results = append(results, ValidateValue(&view, "rx_jumbo_ring_max", view.RxJumboRingMax, sysEthtool.RingRxJumboMax, skip))
-	}
-	if view.PrivFlags != nil {
-		results = append(results, ValidateValue(&view, "priv_flags", view.PrivFlags, sysEthtool.PrivFlags, skip))
-	}
+	results = validateAttribute(results, &view, "speed", view.Speed, sysEthtool.Speed, skip)
+	results = validateAttribute(results, &view, "duplex", view.Duplex, sysEthtool.Duplex, skip)
+	results = validateAttribute(results, &view, "rx_checksum", view.RxChecksum, sysEthtool.RxChecksum, skip)
+	results = validateAttribute(results, &view, "tx_checksum", view.TxChecksum, sysEthtool.TxChecksum, skip)
+	results = validateAttribute(results, &view, "adaptive_rx", view.AdaptiveRx, sysEthtool.AdaptiveRx, skip)
+	results = validateAttribute(results, &view, "adaptive_tx", view.AdaptiveTx, sysEthtool.AdaptiveTx, skip)
+	results = validateAttribute(results, &view, "rx_usecs", view.RxUsecs, sysEthtool.RxUsecs, skip)
+	results = validateAttribute(results, &view, "tx_usecs", view.TxUsecs, sysEthtool.TxUsecs, skip)
+	results = validateAttribute(results, &view, "rx_ring", view.RxRing, sysEthtool.RingRx, skip)
+	results = validateAttribute(results, &view, "tx_ring", view.TxRing, sysEthtool.RingTx, skip)
+	results = validateAttribute(results, &view, "rx_mini_ring", view.RxMiniRing, sysEthtool.RingRxMini, skip)
+	results = validateAttribute(results, &view, "rx_jumbo_ring", view.RxJumboRing, sysEthtool.RingRxJumbo, skip)
+	results = validateAttribute(results, &view, "rx_ring_max", view.RxRingMax, sysEthtool.RingRxMax, skip)
+	results = validateAttribute(results, &view, "tx_ring_max", view.TxRingMax, sysEthtool.RingTxMax, skip)
+	results = validateAttribute(results, &view, "rx_mini_ring_max", view.RxMiniRingMax, sysEthtool.RingRxMiniMax, skip)
+	results = validateAttribute(results, &view, "rx_jumbo_ring_max", view.RxJumboRingMax, sysEthtool.RingRxJumboMax, skip)
+	results = validateAttribute(results, &view, "priv_flags", view.PrivFlags, sysEthtool.PrivFlags, skip)
 	return results
+}
+
+// validateAttribute records the assertion for one attribute of an interface, or
+// nothing at all when the entry does not configure it. When the entry asked for
+// skip_unsupported and the interface has nothing to report for the attribute,
+// the assertion is skipped rather than failed: that is what lets one baseline
+// name driver specific settings and still hold on a fleet of mixed hardware.
+// A value that is reported but does not match is not affected, and neither is a
+// failure that says something is wrong on the host.
+func validateAttribute[T any](results []TestResult, res *Ethtool, property string, expected matcher, actual func() (T, error), skip bool) []TestResult {
+	if expected == nil {
+		return results
+	}
+	if res.SkipUnsupported {
+		if _, err := actual(); err != nil && errors.Is(err, system.ErrFieldNotReported) {
+			return append(results, skipResult(EthtoolResourceName, res.ID(), res.GetTitle(), res.GetMeta(), property, time.Now()))
+		}
+	}
+	return append(results, ValidateValue(res, property, expected, actual, skip))
 }
 
 // attributesMissing rejects an entry that carries no matcher at all. Such an

@@ -4,6 +4,7 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -341,10 +342,17 @@ func (e *defEthtool) PrivFlags() ([]string, error) {
 
 	out, err := runEthtool("--show-priv-flags", e.name)
 	if err != nil {
-		e.privFlagsErr = err
+		e.privFlagsErr = notReported(err)
 		return nil, e.privFlagsErr
 	}
 	e.privFlags = parsePrivFlags(out)
+	if len(e.privFlags) == 0 {
+		// A driver that answers with no flag at all has nothing to assert on,
+		// so the caller is told rather than handed an empty list that no rule
+		// could ever match.
+		e.privFlagsErr = fmt.Errorf("%w %q for interface %s", ErrFieldNotReported, "priv_flags", e.name)
+		return nil, e.privFlagsErr
+	}
 	return e.privFlags, nil
 }
 
@@ -368,13 +376,13 @@ func (e *defEthtool) Driver() (string, error) {
 
 	out, err := runEthtool("-i", e.name)
 	if err != nil {
-		e.driverErr = err
+		e.driverErr = notReported(err)
 		return "", e.driverErr
 	}
 
 	driver, ok := parseEthtoolFields(out)["driver"]
 	if !ok {
-		e.driverErr = fmt.Errorf("ethtool did not report %q for interface %s", "driver", e.name)
+		e.driverErr = fmt.Errorf("%w %q for interface %s", ErrFieldNotReported, "driver", e.name)
 		return "", e.driverErr
 	}
 	e.driver = driver
@@ -433,17 +441,37 @@ func (e *defEthtool) ringSettings() (map[string]string, error) {
 
 // field reads one value, turning the two expected failure modes into a message
 // that names the interface, so a baseline rule over many interfaces stays
-// diagnosable.
+// diagnosable. A value the interface simply has no line for is marked, so a
+// caller can treat it as "this hardware does not have the setting".
 func (e *defEthtool) field(fields map[string]string, key string, err error) (string, error) {
 	if err != nil {
-		return "", err
+		return "", notReported(err)
 	}
 	if !e.exists {
 		return "", fmt.Errorf("interface %s does not exist", e.name)
 	}
 	value, ok := fields[key]
 	if !ok {
-		return "", fmt.Errorf("ethtool did not report %q for interface %s", key, e.name)
+		return "", fmt.Errorf("%w %q for interface %s", ErrFieldNotReported, key, e.name)
 	}
 	return value, nil
+}
+
+// notReported marks the failures that mean "this interface has nothing to say
+// about this attribute": the driver does not support the setting at all, which
+// ethtool answers with "Operation not supported". Every other failure -- a
+// missing ethtool binary, an interface that is gone, a permission problem -- is
+// passed through untouched, because those say something is wrong on the host
+// rather than something about its hardware.
+func notReported(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrFieldNotReported) || errors.Is(err, ErrEthtoolNotFound) || errors.Is(err, ErrEthtoolUnsupported) {
+		return err
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "not supported") {
+		return fmt.Errorf("%w: %s", ErrFieldNotReported, err)
+	}
+	return err
 }

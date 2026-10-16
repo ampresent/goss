@@ -52,6 +52,13 @@ var (
 	ErrEthtoolUnsupported = errors.New("ethtool resource is only supported on Linux")
 	// ErrEthtoolNotFound is returned when the ethtool binary is not on the PATH.
 	ErrEthtoolNotFound = errors.New("ethtool command not found in PATH")
+	// ErrFieldNotReported is wrapped into the error of a getter when the
+	// interface has nothing to report for the attribute: the driver has no such
+	// setting, or ethtool refuses to describe it. It separates "this hardware
+	// does not have the setting" from "something is wrong on this host", which
+	// is the distinction the ethtool resource's skip_unsupported option is
+	// built on. Callers use errors.Is to tell the two apart.
+	ErrFieldNotReported = errors.New("ethtool does not report")
 )
 
 // InterfaceNames returns the names of every network interface on the host,
